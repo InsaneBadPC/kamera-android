@@ -716,7 +716,8 @@ class AudioBackchannel(
         if (context == null) return false
 
         return suspendCancellableCoroutine { continuation ->
-            val tts = android.speech.tts.TextToSpeech(context) { status ->
+            lateinit var tts: android.speech.tts.TextToSpeech
+            tts = android.speech.tts.TextToSpeech(context) { status ->
                 if (status == android.speech.tts.TextToSpeech.SUCCESS) {
                     tts.setOnUtteranceProgressListener(
                         object : android.speech.tts.UtteranceProgressListener() {

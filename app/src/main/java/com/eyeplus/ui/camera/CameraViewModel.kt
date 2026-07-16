@@ -437,7 +437,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     // Speak alert through camera speaker
                     val bc = audioBackchannel
-                    if (bc != null && bc.status.value == AudioBackchannel.Status.CONNECTED) {
+                    if (bc != null && bc.status.value.state == AudioBackchannel.State.CONNECTED) {
                         viewModelScope.launch {
                             bc.speakText(
                                 "Upozornění: ${analysis.description.take(100)}"
