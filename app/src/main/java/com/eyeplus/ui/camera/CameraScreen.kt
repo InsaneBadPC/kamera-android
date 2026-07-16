@@ -103,7 +103,7 @@ private fun ConnectionPanel(
     onConnect: (String, Int, String, String) -> Unit,
     onDeviceSelected: (OnvifDiscovery.DiscoveredDevice) -> Unit
 ) {
-    var showManual by remember { mutableStateOf(false) }
+    var showManual by remember { mutableStateOf(true) }
     var manualIp by remember { mutableStateOf("") }
     var manualPort by remember { mutableStateOf("80") }
     var manualUser by remember { mutableStateOf("admin") }
@@ -115,15 +115,8 @@ private fun ConnectionPanel(
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Icon(
-            Icons.Default.Security,
-            contentDescription = null,
-            modifier = Modifier.size(72.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
         Spacer(modifier = Modifier.height(16.dp))
+
         Text(
             text = "EyePlus AI",
             style = MaterialTheme.typography.headlineLarge,
@@ -136,7 +129,7 @@ private fun ConnectionPanel(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         // Discover button
         Button(
@@ -151,7 +144,7 @@ private fun ConnectionPanel(
                     color = MaterialTheme.colorScheme.onPrimary
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Vyhledávání kamer...")
+                Text("Vyhledávání kamer v síti...")
             } else {
                 Icon(Icons.Default.Search, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
@@ -216,73 +209,107 @@ private fun ConnectionPanel(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Manual connection
+        // Manual connection section
         TextButton(onClick = { showManual = !showManual }) {
-            Text(if (showManual) "Skrýt ruční připojení" else "Ruční připojení →")
+            Text(
+                if (showManual) "Skrýt ruční připojení" else "Ruční připojení →",
+                color = MaterialTheme.colorScheme.primary
+            )
         }
 
         if (showManual) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = manualIp,
-                onValueChange = { manualIp = it },
-                label = { Text("IP adresa") },
-                placeholder = { Text("např. 192.168.1.100") },
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = manualPort,
-                    onValueChange = { manualPort = it },
-                    label = { Text("Port") },
-                    modifier = Modifier.width(100.dp),
-                    singleLine = true
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                 )
-                OutlinedTextField(
-                    value = manualUser,
-                    onValueChange = { manualUser = it },
-                    label = { Text("Uživatel") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = manualPass,
-                onValueChange = { manualPass = it },
-                label = { Text("Heslo") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = {
-                    onConnect(manualIp, manualPort.toIntOrNull() ?: 80, manualUser, manualPass)
-                },
-                enabled = manualIp.isNotBlank() && !state.isConnecting,
-                modifier = Modifier.fillMaxWidth()
             ) {
-                if (state.isConnecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Ruční připojení",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Připojování...")
-                } else {
-                    Icon(Icons.Default.Cable, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Připojit kameře")
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Zadejte IP adresu kamery (zjistíte v routeru nebo aplikaci pro správu sítě)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it },
+                        label = { Text("IP adresa kamery *") },
+                        placeholder = { Text("např. 192.168.1.100") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = manualPort,
+                            onValueChange = { manualPort = it },
+                            label = { Text("Port") },
+                            placeholder = { Text("80") },
+                            modifier = Modifier.width(100.dp),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = manualUser,
+                            onValueChange = { manualUser = it },
+                            label = { Text("Uživatel") },
+                            placeholder = { Text("admin") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = manualPass,
+                        onValueChange = { manualPass = it },
+                        label = { Text("Heslo") },
+                        placeholder = { Text("admin") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Běžné porty: 80 (ONVIF), 554 (RTSP), 8080, 8899. Zkuste admin/123456 pokud admin/admin nefunguje.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            onConnect(manualIp, manualPort.toIntOrNull() ?: 80, manualUser, manualPass)
+                        },
+                        enabled = manualIp.isNotBlank() && !state.isConnecting,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (state.isConnecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Připojování k $manualIp ...")
+                        } else {
+                            Icon(Icons.Default.Cable, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Připojit")
+                        }
+                    }
                 }
             }
         }

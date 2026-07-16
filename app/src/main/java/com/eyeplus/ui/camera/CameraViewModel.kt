@@ -68,7 +68,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private var lastAlertTimeMs = 0L
 
     /**
-     * Discover ONVIF cameras on the local network via WS-Discovery.
+     * Discover ONVIF cameras on the local network.
      */
     fun discoverCameras() {
         viewModelScope.launch {
@@ -82,18 +82,25 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 multicastLock = NetworkUtils.acquireMulticastLock(context)
 
                 val devices = discovery.discover(timeoutMs = 8000L)
+                Log.d("CameraViewModel", "Discovery found ${devices.size} devices")
+                devices.forEach { Log.d("CameraViewModel", "  ${it.source}: ${it.ip}:${it.port}") }
+
                 _uiState.value = _uiState.value.copy(
                     isDiscovering = false,
                     discoveredDevices = devices
                 )
 
                 if (devices.isNotEmpty()) {
-                    // Auto-connect to first discovered device
                     val first = devices.first()
                     connectToCamera(first.ip, first.port)
                 } else {
                     _uiState.value = _uiState.value.copy(
-                        error = "Nebyla nalezena žádná ONVIF kamera. Zkontrolujte, zda je kamera ve stejné síti."
+                        error = "Nebyla nalezena kamera.\n\n" +
+                            "Tipy:\n" +
+                            "1. Ujistěte se, že telefon a kamera jsou ve stejné WiFi síti\n" +
+                            "2. Použijte 'Ruční připojení' a zadejte IP adresu kamery\n" +
+                            "3. Zkontrolujte, zda má kamera zapnutý ONVIF\n" +
+                            "4. Zkuste zadat IP ve tvaru: http://192.168.x.x:80"
                     )
                 }
             } catch (e: Exception) {
@@ -129,21 +136,24 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     password = state.password
                 )
 
-                // Test connection
-                val isConnected = client.testConnection()
-                if (!isConnected) {
+                val testResult = client.testConnection()
+                if (!testResult.success) {
                     _uiState.value = _uiState.value.copy(
                         isConnecting = false,
                         isConnected = false,
-                        error = "Nelze se připojit ke kameře na $ip:$port"
+                        error = "Nelze se připojit ke kameře na $ip:$port\n\n" +
+                            "Zkontrolujte:\n" +
+                            "1. Je kamera zapnutá a připojená k síti?\n" +
+                            "2. Je ONVIF povolený v nastavení kamery?\n" +
+                            "3. Zkuste port 80, 8080 nebo 8899\n" +
+                            "4. Zkuste heslo: admin / 123456\n" +
+                            "5. Připojte se na IP kamery v prohlížeči: http://$ip"
                     )
+                    Log.w("CameraViewModel", "Connection test failed: ${testResult.message}")
                     return@launch
                 }
 
-                // Get device info
                 val deviceInfo = client.getDeviceInformation()
-
-                // Get profiles and stream URLs
                 val profiles = client.getProfiles()
                 val mainStream = client.getRtspUrl(0)
                 val subStream = client.getRtspUrl(1)

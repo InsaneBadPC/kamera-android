@@ -1,12 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Allow cleartext HTTP for local camera network -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">192.168.0.0/16</domain>
-        <domain includeSubdomains="true">10.0.0.0/8</domain>
-        <domain includeSubdomains="true">172.16.0.0/12</domain>
-        <domain includeSubdomains="true">100.64.0.0/10</domain>
-    </domain-config>
-    <!-- All other traffic uses HTTPS -->
-    <base-config cleartextTrafficPermitted="false" />
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>
