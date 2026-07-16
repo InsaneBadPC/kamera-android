@@ -84,7 +84,7 @@ class MonitoringService : Service() {
      * Main monitoring loop - periodically captures frames and analyzes them.
      */
     private suspend fun monitoringLoop() {
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val currentState = state.value
 

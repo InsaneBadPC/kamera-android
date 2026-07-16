@@ -4,8 +4,8 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
-import com.pedro.common.ConnectChecker
-import com.pedro.library.rtsp.RtspOnlyAudio
+import com.pedro.rtplibrary.rtsp.RtspAudioOnly
+import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,11 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * Audio backchannel manager for sending audio from the phone's microphone
  * to the camera's speaker via RTSP.
  *
- * This enables two-way voice communication:
- * - AI can speak through the camera speaker (TTS -> AudioBackchannel)
- * - User can speak to the camera and AI hears via STT
- *
- * Uses pedroSG94 RootEncoder library for RTSP audio-only streaming.
+ * Uses pedroSG94 RootEncoder (rtmp-rtsp-stream-client-java) library.
  */
 class AudioBackchannel {
 
@@ -27,7 +23,7 @@ class AudioBackchannel {
         private const val TAG = "AudioBackchannel"
 
         // Audio recording parameters
-        private const val SAMPLE_RATE = 8000 // G.711 uses 8kHz
+        private const val SAMPLE_RATE = 8000
         private const val AUDIO_SOURCE = MediaRecorder.AudioSource.MIC
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
@@ -50,19 +46,12 @@ class AudioBackchannel {
     private val _status = MutableStateFlow(BackchannelStatus())
     val status: StateFlow<BackchannelStatus> = _status.asStateFlow()
 
-    private var rtspAudio: RtspOnlyAudio? = null
+    private var rtspClient: RtspAudioOnly? = null
     private var audioRecord: AudioRecord? = null
     private var recordJob: Job? = null
     private var scope: CoroutineScope? = null
     private var isRecording = false
 
-    /**
-     * Connect the audio backchannel to the camera.
-     *
-     * @param rtspUrl RTSP URL with backchannel support
-     * @param username Camera login username
-     * @param password Camera login password
-     */
     fun connect(rtspUrl: String, username: String, password: String) {
         if (_status.value.state == BackchannelState.CONNECTED ||
             _status.value.state == BackchannelState.CONNECTING) {
@@ -73,12 +62,8 @@ class AudioBackchannel {
         _status.value = BackchannelStatus(state = BackchannelState.CONNECTING)
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-        val connectChecker = object : ConnectChecker {
-            override fun onConnectionStarted(url: String) {
-                Log.d(TAG, "RTSP connection started to $url")
-            }
-
-            override fun onConnectionSuccess() {
+        val connectChecker = object : ConnectCheckerRtsp {
+            override fun onConnectionSuccessRtsp() {
                 Log.d(TAG, "RTSP backchannel connected successfully")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.CONNECTED,
@@ -87,7 +72,7 @@ class AudioBackchannel {
                 startAudioCapture()
             }
 
-            override fun onConnectionFailed(reason: String) {
+            override fun onConnectionFailedRtsp(reason: String) {
                 Log.e(TAG, "RTSP backchannel connection failed: $reason")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.ERROR,
@@ -95,14 +80,14 @@ class AudioBackchannel {
                 )
             }
 
-            override fun onDisconnect() {
+            override fun onDisconnectRtsp() {
                 Log.d(TAG, "RTSP backchannel disconnected")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.DISCONNECTED
                 )
             }
 
-            override fun onAuthError() {
+            override fun onAuthErrorRtsp() {
                 Log.e(TAG, "RTSP backchannel auth error")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.ERROR,
@@ -110,23 +95,14 @@ class AudioBackchannel {
                 )
             }
 
-            override fun onAuthSuccess() {
+            override fun onAuthSuccessRtsp() {
                 Log.d(TAG, "RTSP backchannel auth success")
-            }
-
-            override fun onNewBitrate(bitrate: Long) {
-                Log.v(TAG, "RTSP bitrate: $bitrate bps")
             }
         }
 
         try {
-            rtspAudio = RtspOnlyAudio(connectChecker).apply {
-                // Prepare with G.711 codec (commonly supported by IP cameras)
-                setAudioCodec(com.pedro.common.audio.AudioCodec.G711)
-                prepareAudio()
-                // Set authorization via stream client
-                getStreamClient().setAuthorization(username, password)
-                // Start the RTSP backchannel stream
+            rtspClient = RtspAudioOnly(connectChecker).apply {
+                setAuthorization(username, password)
                 startStream(rtspUrl)
             }
         } catch (e: Exception) {
@@ -138,10 +114,6 @@ class AudioBackchannel {
         }
     }
 
-    /**
-     * Start capturing microphone audio and sending it via RTSP.
-     * The pedroSG94 library handles the actual audio encoding internally.
-     */
     private fun startAudioCapture() {
         if (isRecording) return
         isRecording = true
@@ -171,12 +143,11 @@ class AudioBackchannel {
             while (isActive && isRecording) {
                 val bytesRead = audioRecord?.read(buffer, 0, buffer.size) ?: -1
                 if (bytesRead > 0) {
-                    // Audio is sent automatically by pedroSG94 library
+                    // Audio is sent automatically by the library
                     Log.v(TAG, "Audio bytes captured: $bytesRead")
                 }
             }
 
-            // Cleanup
             try {
                 audioRecord?.stop()
                 audioRecord?.release()
@@ -187,23 +158,14 @@ class AudioBackchannel {
         Log.d(TAG, "Audio capture started")
     }
 
-    /**
-     * Send pre-encoded audio data to the camera.
-     * Used for TTS: AI text is first synthesized to audio,
-     * then sent through this channel.
-     */
     fun sendAudioData(audioData: ByteArray) {
         if (_status.value.state != BackchannelState.CONNECTED) {
             Log.w(TAG, "Cannot send audio - backchannel not connected")
             return
         }
-
         Log.d(TAG, "Audio data size: ${audioData.size} bytes (TTS output)")
     }
 
-    /**
-     * Disconnect the audio backchannel and release resources.
-     */
     fun disconnect() {
         Log.d(TAG, "Disconnecting audio backchannel")
 
@@ -218,8 +180,8 @@ class AudioBackchannel {
         } catch (_: Exception) { }
 
         try {
-            rtspAudio?.stopStream()
-            rtspAudio = null
+            rtspClient?.stopStream()
+            rtspClient = null
         } catch (_: Exception) { }
 
         scope?.cancel()

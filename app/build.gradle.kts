@@ -77,7 +77,7 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     // ML Kit on-device object detection
-    implementation("com.google.mlkit:object-detection:17.0.2")
+    implementation("com.google.mlkit:object-detection:17.0.1")
 
     // RTMP/RTSP client for audio backchannel
     implementation("com.github.pedroSG94:rtmp-rtsp-stream-client-java:2.3.0")
