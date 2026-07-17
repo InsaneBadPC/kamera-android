@@ -17,10 +17,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
+import com.eyeplus.data.SettingsRepository
 
 /**
  * Settings screen for configuring camera connection,
- * AI API key, recording preferences, and monitoring behavior.
+ * AI API keys, recording preferences, and monitoring behavior.
  *
  * All settings are 100% configurable and stored persistently.
  */
@@ -38,10 +39,19 @@ fun SettingsScreen() {
     var showPassword by remember { mutableStateOf(false) }
     var rtspPort by remember { mutableStateOf("554") }
 
-    // AI settings
+    // AI API keys (persisted via SharedPreferences)
     var geminiApiKey by remember { mutableStateOf("") }
+    var groqApiKey by remember { mutableStateOf("") }
+    var openrouterApiKey by remember { mutableStateOf("") }
     var showApiKey by remember { mutableStateOf(false) }
     var monitoringInterval by remember { mutableStateOf("30") }
+
+    // Load persisted values on first composition
+    LaunchedEffect(Unit) {
+        geminiApiKey = SettingsRepository.getGeminiApiKey(context)
+        groqApiKey = SettingsRepository.getGroqApiKey(context)
+        openrouterApiKey = SettingsRepository.getOpenRouterApiKey(context)
+    }
 
     // Recording settings
     var recordingQuality by remember { mutableStateOf("High (1080p)") }
@@ -136,31 +146,93 @@ fun SettingsScreen() {
             )
         }
 
-        // ─── Gemini AI Section ───
-        SettingsSection(title = "AI - Gemini API") {
+        // ─── AI API Keys Section ───
+        SettingsSection(title = "AI - API klíče") {
+
+            // --- Gemini ---
             OutlinedTextField(
                 value = geminiApiKey,
-                onValueChange = { geminiApiKey = it },
-                label = { Text("Gemini API klíč") },
+                onValueChange = {
+                    geminiApiKey = it
+                    SettingsRepository.setGeminiApiKey(context, it)
+                },
+                label = { Text("Gemini API klíč (AI chat + analýza)") },
                 placeholder = { Text("AIzaSy...") },
                 leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
-                trailingIcon = {
-                    IconButton(onClick = { showApiKey = !showApiKey }) {
-                        Icon(
-                            if (showApiKey) Icons.Default.VisibilityOff
-                            else Icons.Default.Visibility,
-                            contentDescription = null
-                        )
-                    }
-                },
                 visualTransformation = if (showApiKey) VisualTransformation.None
                     else PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 supportingText = {
-                    Text("Získejte zdarma na aistudio.google.com/app/apikey")
+                    Text("Získejte zdarma na aistudio.google.com")
                 }
             )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // --- Groq ---
+            OutlinedTextField(
+                value = groqApiKey,
+                onValueChange = {
+                    groqApiKey = it
+                    SettingsRepository.setGroqApiKey(context, it)
+                },
+                label = { Text("Groq API klíč (AI chat)") },
+                placeholder = { Text("gsk_...") },
+                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                visualTransformation = if (showApiKey) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                supportingText = {
+                    Text("Získejte zdarma na console.groq.com/keys — Llama 3 70B")
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // --- OpenRouter ---
+            OutlinedTextField(
+                value = openrouterApiKey,
+                onValueChange = {
+                    openrouterApiKey = it
+                    SettingsRepository.setOpenRouterApiKey(context, it)
+                },
+                label = { Text("OpenRouter API klíč (AI chat)") },
+                placeholder = { Text("sk-or-...") },
+                leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                visualTransformation = if (showApiKey) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                supportingText = {
+                    Text("Získejte zdarma na openrouter.ai/keys — mnoho free modelů")
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Show/hide all keys toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Visibility,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Zobrazit klíče",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = showApiKey,
+                    onCheckedChange = { showApiKey = it }
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -191,7 +263,7 @@ fun SettingsScreen() {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Model info
+            // Provider info
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -200,16 +272,27 @@ fun SettingsScreen() {
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
-                        text = "Model: Gemini 2.5 Flash",
+                        text = "Dostupní poskytovatelé:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "• Gemini 2.5 Flash — AI chat + analýza obrazu (1 500/den zdarma)",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        text = "Limit: 1 500 analýz/den (zdarma)",
+                        text = "• Groq (Llama 3 70B) — AI chat (30 dotazů/min zdarma)",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        text = "ML Kit on-device detekce: 100% offline",
+                        text = "• OpenRouter — AI chat s výběrem free modelů",
                         style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "Poskytovatele vyberete v AI chatu.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -348,8 +431,8 @@ fun SettingsScreen() {
 
             Text(
                 text = "EYEPLUS AI je 100% bezplatná aplikace pro ovládání " +
-                    "PTZ IP kamer. Využívá Google Gemini API Free Tier, " +
-                    "ML Kit pro on-device detekci a Android TTS/STT.",
+                    "PTZ IP kamer. Využívá Google Gemini 2.5 Flash, Groq Llama 3, " +
+                    "OpenRouter, ML Kit a Android TTS/STT.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

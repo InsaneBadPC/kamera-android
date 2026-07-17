@@ -2,17 +2,17 @@ package com.eyeplus.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.eyeplus.data.ai.ChatMessage
-import com.eyeplus.data.ai.GeminiAnalyzer
+import com.eyeplus.data.ai.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 /**
  * ViewModel for the AI chat interface.
  *
- * Manages conversation with Gemini AI, including:
+ * Manages conversation with selected AI provider, including:
  * - Text message history
  * - Streaming responses
+ * - Provider switching
  * - System event contextualization
  */
 class ChatViewModel : ViewModel() {
@@ -22,35 +22,74 @@ class ChatViewModel : ViewModel() {
         val isWaitingForResponse: Boolean = false,
         val isStreaming: Boolean = false,
         val currentStreamingText: String = "",
+        val selectedProvider: ProviderType = ProviderType.GEMINI,
         val error: String? = null
     )
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    private var geminiAnalyzer: GeminiAnalyzer? = null
+    private var currentProvider: AiProvider? = null
 
     // Track whether the welcome message has been shown
     private var welcomeShown = false
 
-    fun initialize(apiKey: String? = null) {
-        if (geminiAnalyzer != null) return
+    /**
+     * Initialize with API keys from settings.
+     * Creates the appropriate provider based on [selectedProvider].
+     */
+    fun initialize(
+        selectedProvider: ProviderType,
+        geminiKey: String,
+        groqKey: String,
+        openrouterKey: String
+    ) {
+        if (currentProvider != null && _uiState.value.selectedProvider == selectedProvider) return
 
-        geminiAnalyzer = GeminiAnalyzer(apiKey = apiKey ?: "")
+        _uiState.update { it.copy(selectedProvider = selectedProvider) }
+
+        currentProvider = when (selectedProvider) {
+            ProviderType.GEMINI -> GeminiAnalyzer(apiKey = geminiKey)
+            ProviderType.GROQ -> GroqProvider(apiKey = groqKey)
+            ProviderType.OPENROUTER -> OpenRouterProvider(apiKey = openrouterKey)
+        }
 
         if (!welcomeShown) {
             welcomeShown = true
-            addSystemMessage("Dobrý den! Jsem EyePlus AI asistent. " +
+            addSystemMessage("Dobrý den! Jsem EyePlus AI asistent " +
+                "(${selectedProvider.displayName}). " +
                 "Můžete se mnou komunikovat o dění ve vašem monitorovaném prostoru. " +
                 "Co potřebujete vědět?")
         }
     }
 
     /**
+     * Switch to a different AI provider.
+     */
+    fun switchProvider(
+        provider: ProviderType,
+        geminiKey: String,
+        groqKey: String,
+        openrouterKey: String
+    ) {
+        if (provider == _uiState.value.selectedProvider) return
+
+        // Clear old provider
+        currentProvider = null
+
+        // Reset chat
+        _uiState.update { ChatUiState(selectedProvider = provider) }
+        welcomeShown = false
+
+        // Initialize new provider
+        initialize(provider, geminiKey, groqKey, openrouterKey)
+    }
+
+    /**
      * Send a chat message and get AI response.
      */
     fun sendMessage(text: String) {
-        val analyzer = geminiAnalyzer ?: return
+        val provider = currentProvider ?: return
         if (text.isBlank() || _uiState.value.isWaitingForResponse) return
 
         // Add user message immediately
@@ -67,10 +106,9 @@ class ChatViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 // Use streaming for better UX
-                analyzer.chatStream(text).collect { response ->
+                provider.chatStream(text).collect { response ->
                     if (response.isStreaming) {
                         _uiState.update { state ->
-                            // Replace the last message if it's the streaming one
                             val msgs = state.messages.toMutableList()
                             if (msgs.lastOrNull()?.isStreaming == true) {
                                 msgs[msgs.lastIndex] = response
@@ -86,7 +124,6 @@ class ChatViewModel : ViewModel() {
                     } else {
                         _uiState.update { state ->
                             val msgs = state.messages.toMutableList()
-                            // Update or add the final message
                             if (msgs.lastOrNull()?.isStreaming == true) {
                                 msgs[msgs.lastIndex] = response
                             } else {
@@ -128,7 +165,7 @@ class ChatViewModel : ViewModel() {
      * Add an AI event notification (e.g., person detected).
      */
     fun addEventNotification(text: String) {
-        geminiAnalyzer?.addSystemMessage(text)
+        currentProvider?.addSystemMessage(text)
         addSystemMessage("🔔 $text")
     }
 
@@ -136,12 +173,11 @@ class ChatViewModel : ViewModel() {
      * Clear the conversation history.
      */
     fun clearChat() {
-        geminiAnalyzer?.clearHistory()
+        currentProvider?.clearHistory()
         _uiState.update {
-            ChatUiState()
+            ChatUiState(selectedProvider = it.selectedProvider)
         }
         welcomeShown = false
-        initialize()
     }
 
     override fun onCleared() {

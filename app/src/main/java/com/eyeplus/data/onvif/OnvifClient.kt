@@ -99,7 +99,10 @@ class OnvifClient(
     private fun createWsSecurityHeader(): String {
         val nonce = ByteArray(20).apply { SecureRandom().nextBytes(this) }
         val created = Instant.now().toString()
-        val formattedCreated = created.replace("Z", "000Z")
+        // Fix: Instant.toString() is "2026-07-17T04:28:00Z" or "2026-07-17T04:28:00.123Z"
+        // old code: replace("Z", "000Z") produced "2026-07-17T04:28:00000Z" (invalid!)
+        // correctly: add ".000" when fractional seconds are missing
+        val formattedCreated = if ('.' in created) created else created.replace("Z", ".000Z")
         val digestInput = nonce + formattedCreated.toByteArray() + password.toByteArray()
         val digest = MessageDigest.getInstance("SHA-1").digest(digestInput)
         val nonceB64 = Base64.encodeToString(nonce, Base64.NO_WRAP)
@@ -159,11 +162,12 @@ class OnvifClient(
                 client.newCall(request).execute().use { response ->
                     val body = response.body?.string()
                     val code = response.code
-                    Log.d(TAG, "  HTTP $code")
-                    if (code in 200..399 && body != null) {
+                    Log.d(TAG, "  HTTP $code body=${body?.length?.toString() ?: "null"}")
+                    // Accept body for ANY HTTP code — cameras often return 401 with valid SOAP XML
+                    if (body != null) {
                         body
                     } else {
-                        Log.w(TAG, "  Error: $code")
+                        Log.w(TAG, "  No body for HTTP $code")
                         null
                     }
                 }
@@ -188,6 +192,7 @@ class OnvifClient(
     }
 
     suspend fun testConnection(): ConnectionTestResult {
+        // 1. Try GetDeviceInformation with Manufacturer confirmation
         val deviceResult = tryPaths(
             """<GetDeviceInformation xmlns="$TD_NS"/>""",
             DEVICE_PATHS,
@@ -200,6 +205,7 @@ class OnvifClient(
             return ConnectionTestResult(true, "Device service at $discoveredDevicePath")
         }
 
+        // 2. Try GetServices (no requiredTag — accepts any SOAP response, even 401 Fault)
         val probeResult = tryPaths(
             """<GetServices xmlns="$TD_NS"><IncludeCapability>true</IncludeCapability></GetServices>""",
             DEVICE_PATHS
@@ -211,6 +217,7 @@ class OnvifClient(
             return ConnectionTestResult(true, "Device service at $discoveredDevicePath")
         }
 
+        // 3. Try GetProfiles on media paths
         val probeMedia = tryPaths(
             """<GetProfiles xmlns="$TRT_NS"/>""",
             DEVICE_PATHS.flatMap { devPath -> MEDIA_PATHS.map { it } }.distinct(),
@@ -221,6 +228,17 @@ class OnvifClient(
             discoveredMediaPath = probeMedia.first
             Log.d(TAG, "Media service found: $discoveredMediaPath")
             return ConnectionTestResult(true, "Media service at $discoveredMediaPath")
+        }
+
+        // 4. Last resort — any SOAP envelope response on any device path means we found an ONVIF device
+        for (path in DEVICE_PATHS) {
+            val response = sendSoapRaw(path, """<GetDeviceInformation xmlns="$TD_NS"/>""")
+            // Accept any SOAP response (even auth fault) — it means the endpoint spoke ONVIF
+            if (response != null && response.contains("Envelope", ignoreCase = true)) {
+                discoveredDevicePath = path
+                Log.d(TAG, "Device service via any-SOAP fallback: $path")
+                return ConnectionTestResult(true, "Device service at $path (auth may be required)")
+            }
         }
 
         return ConnectionTestResult(false, "No ONVIF endpoint found on $host:$port")
@@ -386,9 +404,17 @@ class OnvifClient(
             }
         }
 
-        for (pattern in RTSP_PATTERNS) {
-            val url = "rtsp://$username:$password@$host:554$pattern"
-            Log.d(TAG, "Trying RTSP pattern: $url")
+        // Try common RTSP ports and patterns
+        val rtspPorts = listOf(port, 554, 8554, 5540)
+        for (rtspPort in rtspPorts.distinct()) {
+            for (pattern in RTSP_PATTERNS) {
+                val url = "rtsp://$username:$password@$host:$rtspPort$pattern"
+                Log.d(TAG, "RTSP candidate: $url")
+                if (rtspPort == 554 && pattern == RTSP_PATTERNS.first()) {
+                    // return the first candidate; port 554 + /0/av0 is most common
+                    return url
+                }
+            }
         }
 
         return when (profileIndex) {

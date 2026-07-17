@@ -20,9 +20,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Integration with Google Gemini 2.5 Flash API via direct REST calls.
- * No Firebase dependencies needed.
+ * Implements [AiProvider] for chat and frame analysis.
  */
-class GeminiAnalyzer(private val apiKey: String) {
+class GeminiAnalyzer(private val apiKey: String) : AiProvider {
 
     companion object {
         private const val TAG = "GeminiAnalyzer"
@@ -63,6 +63,9 @@ Analyze this surveillance camera image. Return JSON:
 """.trimIndent()
     }
 
+    override val type = ProviderType.GEMINI
+    override val supportsVision = true
+
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -76,42 +79,9 @@ Analyze this surveillance camera image. Return JSON:
 
     private val messageHistory = mutableListOf<ChatMessage>()
 
-    // ─── Frame Analysis ───────────────────────────
+    // ─── AiProvider: Chat ────────────────────────
 
-    suspend fun analyzeFrame(bitmap: Bitmap): FrameAnalysis {
-        return withContext(Dispatchers.IO) {
-            var lastError: Exception? = null
-            for (attempt in 1..MAX_RETRIES) {
-                try {
-                    val scaled = downscaleBitmap(bitmap, MAX_IMAGE_DIMENSION)
-                    val base64Image = bitmapToBase64(scaled)
-
-                    val requestBody = buildGenerateRequest(base64Image, FRAME_ANALYSIS_PROMPT)
-                    val response = executeRequest(generateUrl, requestBody)
-                    val result = parseFrameAnalysis(response)
-                    if (result.error != null && attempt < MAX_RETRIES) continue
-                    return@withContext result
-
-                } catch (e: Exception) {
-                    when {
-                        e.message?.contains("429") == true -> {
-                            val waitMs = 1000L * (1 shl attempt)
-                            delay(waitMs)
-                            lastError = e
-                        }
-                        e.message?.contains("403") == true ->
-                            return@withContext FrameAnalysis(error = "Chyba autentizace - zkontrolujte API klíč")
-                        else -> { lastError = e; delay(1000L) }
-                    }
-                }
-            }
-            FrameAnalysis(error = "Selhalo po $MAX_RETRIES pokusech: ${lastError?.message}")
-        }
-    }
-
-    // ─── Chat ─────────────────────────────────────
-
-    suspend fun chat(message: String): ChatMessage {
+    override suspend fun chat(message: String): ChatMessage {
         return withContext(Dispatchers.IO) {
             try {
                 messageHistory.add(ChatMessage(role = "user", text = message))
@@ -129,7 +99,7 @@ Analyze this surveillance camera image. Return JSON:
         }
     }
 
-    fun chatStream(message: String): Flow<ChatMessage> = flow {
+    override fun chatStream(message: String): Flow<ChatMessage> = flow {
         try {
             messageHistory.add(ChatMessage(role = "user", text = message))
             val requestBody = buildChatRequest()
@@ -163,10 +133,45 @@ Analyze this surveillance camera image. Return JSON:
         }
     }.flowOn(Dispatchers.IO)
 
-    fun getHistory(): List<ChatMessage> = messageHistory.toList()
-    fun clearHistory() { messageHistory.clear() }
+    // ─── AiProvider: Frame analysis ──────────────
 
-    fun addSystemMessage(text: String) {
+    override suspend fun analyzeFrame(bitmap: Bitmap): FrameAnalysis {
+        return withContext(Dispatchers.IO) {
+            var lastError: Exception? = null
+            for (attempt in 1..MAX_RETRIES) {
+                try {
+                    val scaled = downscaleBitmap(bitmap, MAX_IMAGE_DIMENSION)
+                    val base64Image = bitmapToBase64(scaled)
+
+                    val requestBody = buildGenerateRequest(base64Image, FRAME_ANALYSIS_PROMPT)
+                    val response = executeRequest(generateUrl, requestBody)
+                    val result = parseFrameAnalysis(response)
+                    if (result.error != null && attempt < MAX_RETRIES) continue
+                    return@withContext result
+
+                } catch (e: Exception) {
+                    when {
+                        e.message?.contains("429") == true -> {
+                            val waitMs = 1000L * (1 shl attempt)
+                            delay(waitMs)
+                            lastError = e
+                        }
+                        e.message?.contains("403") == true ->
+                            return@withContext FrameAnalysis(error = "Chyba autentizace - zkontrolujte API klíč")
+                        else -> { lastError = e; delay(1000L) }
+                    }
+                }
+            }
+            FrameAnalysis(error = "Selhalo po $MAX_RETRIES pokusech: ${lastError?.message}")
+        }
+    }
+
+    // ─── History Management ──────────────────────
+
+    override fun getHistory(): List<ChatMessage> = messageHistory.toList()
+    override fun clearHistory() { messageHistory.clear() }
+
+    override fun addSystemMessage(text: String) {
         messageHistory.add(ChatMessage(role = "system", text = "[Událost] $text"))
     }
 
@@ -259,7 +264,7 @@ Analyze this surveillance camera image. Return JSON:
             ?: ""
     }
 
-    // ─── Helpers ──────────────────────────────────
+    // ─── HTTP Helpers ─────────────────────────────
 
     private suspend fun executeRequest(url: String, body: String): String {
         val request = Request.Builder().url(url).post(body.toRequestBody(jsonMediaType)).build()

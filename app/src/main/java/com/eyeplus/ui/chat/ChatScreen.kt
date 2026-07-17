@@ -10,27 +10,30 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eyeplus.data.SettingsRepository
 import com.eyeplus.data.ai.ChatMessage
+import com.eyeplus.data.ai.ProviderType
 import kotlinx.coroutines.launch
 
 /**
  * AI Chat screen - text conversation with the AI guard.
  *
  * Features:
+ * - Provider selection (Gemini / Groq / OpenRouter)
  * - Message history with role-based styling
  * - Streaming response display
  * - Input field with send button
@@ -41,15 +44,30 @@ import kotlinx.coroutines.launch
 fun ChatScreen(
     viewModel: ChatViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Initialize on first composition
+    // Read persisted settings
+    val geminiKey = remember { SettingsRepository.getGeminiApiKey(context) }
+    val groqKey = remember { SettingsRepository.getGroqApiKey(context) }
+    val openrouterKey = remember { SettingsRepository.getOpenRouterApiKey(context) }
+    val savedProvider = remember { SettingsRepository.getSelectedProvider(context) }
+
+    // Initialize on first composition with persisted settings
     LaunchedEffect(Unit) {
-        viewModel.initialize()
+        viewModel.initialize(
+            selectedProvider = savedProvider,
+            geminiKey = geminiKey,
+            groqKey = groqKey,
+            openrouterKey = openrouterKey
+        )
     }
+
+    // Provider dropdown state
+    var providerExpanded by remember { mutableStateOf(false) }
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(uiState.messages.size, uiState.currentStreamingText) {
@@ -63,7 +81,7 @@ fun ChatScreen(
             .fillMaxSize()
             .padding(bottom = 80.dp) // Bottom nav padding
     ) {
-        // Header
+        // Header with provider selector
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -75,12 +93,84 @@ fun ChatScreen(
                 text = "AI Chat",
                 style = MaterialTheme.typography.titleLarge
             )
-            if (uiState.messages.isNotEmpty()) {
-                IconButton(onClick = { viewModel.clearChat() }) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Smazat konverzaci"
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Provider selector dropdown
+                ExposedDropdownMenuBox(
+                    expanded = providerExpanded,
+                    onExpandedChange = { providerExpanded = !providerExpanded }
+                ) {
+                    AssistChip(
+                        onClick = { providerExpanded = true },
+                        label = {
+                            Text(
+                                text = uiState.selectedProvider.displayName,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Cloud,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerExpanded)
+                        },
+                        modifier = Modifier.menuAnchor()
                     )
+
+                    ExposedDropdownMenu(
+                        expanded = providerExpanded,
+                        onDismissRequest = { providerExpanded = false }
+                    ) {
+                        ProviderType.entries.forEach { provider ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(provider.displayName)
+                                        Text(
+                                            text = provider.defaultModel,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    providerExpanded = false
+                                    if (provider != uiState.selectedProvider) {
+                                        viewModel.switchProvider(
+                                            provider = provider,
+                                            geminiKey = geminiKey,
+                                            groqKey = groqKey,
+                                            openrouterKey = openrouterKey
+                                        )
+                                        SettingsRepository.setSelectedProvider(context, provider)
+                                    }
+                                },
+                                leadingIcon = {
+                                    if (provider == uiState.selectedProvider) {
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Clear chat button
+                if (uiState.messages.isNotEmpty()) {
+                    IconButton(onClick = { viewModel.clearChat() }) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Smazat konverzaci"
+                        )
+                    }
                 }
             }
         }
