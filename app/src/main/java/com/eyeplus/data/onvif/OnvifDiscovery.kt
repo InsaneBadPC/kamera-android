@@ -2,11 +2,9 @@ package com.eyeplus.data.onvif
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.BufferedReader
@@ -20,8 +18,9 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
 import java.net.URL
+import java.util.Collections
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.Semaphore
 
 class OnvifDiscovery {
 
@@ -31,7 +30,7 @@ class OnvifDiscovery {
         private const val MULTICAST_PORT = 3702
         private const val DEFAULT_TIMEOUT_MS = 5000L
         private const val BUFFER_SIZE = 65536
-        private val SCAN_PORTS = listOf(80, 8080, 8899, 554)
+        private val SCAN_PORTS = listOf(80, 8080, 8899)
 
         private val PROBE_MESSAGE = """<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope
@@ -50,6 +49,27 @@ class OnvifDiscovery {
     </wsd:Probe>
   </soap:Body>
 </soap:Envelope>"""
+
+        // ONVIF GetCapabilities probe for direct camera detection
+        private val GET_CAPABILITIES_SOAP = """<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope
+    xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+    xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+  <soap:Body>
+    <tds:GetCapabilities>
+      <tds:Category>All</tds:Category>
+    </tds:GetCapabilities>
+  </soap:Body>
+</soap:Envelope>"""
+
+        private val ONVIF_PATHS = listOf(
+            "/onvif/device_service",
+            "/onvif/DeviceService",
+            "/onvif/services/device_service",
+            "/onvif/services",
+            "/onvif_service",
+            "/onvif"
+        )
     }
 
     data class DiscoveredDevice(
@@ -63,16 +83,23 @@ class OnvifDiscovery {
         val source: String = "ws-discovery"
     )
 
-    suspend fun discover(timeoutMs: Long = DEFAULT_TIMEOUT_MS): List<DiscoveredDevice> {
-        val wsDevices = wsDiscovery(timeoutMs)
+    suspend fun discover(
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS
+    ): List<DiscoveredDevice> {
+        val wsDevices = wsDiscovery(minOf(timeoutMs, 3000L))
         if (wsDevices.isNotEmpty()) return wsDevices
 
-        Log.d(TAG, "WS-Discovery found nothing, scanning subnet")
-        val scanDevices = fastSubnetScan()
+        Log.d(TAG, "WS-Discovery found nothing, scanning subnet (TCP parallel)")
+        val scanDevices = fastSubnetScan(minOf(timeoutMs, 15000L))
         if (scanDevices.isNotEmpty()) return scanDevices
 
-        Log.d(TAG, "Subnet scan found nothing, trying ARP cache")
-        return arpCacheScan()
+        Log.d(TAG, "TCP scan found nothing, trying ARP cache")
+        val arpDevices = arpCacheScan()
+        if (arpDevices.isNotEmpty()) return arpDevices
+
+        Log.w(TAG, "ALL DISCOVERY METHODS FAILED — no cameras found")
+        Log.w(TAG, "Tips: phone must be on same WiFi, camera must have ONVIF enabled")
+        return emptyList()
     }
 
     private suspend fun wsDiscovery(timeoutMs: Long): List<DiscoveredDevice> {
@@ -112,43 +139,70 @@ class OnvifDiscovery {
         }
     }
 
-    private suspend fun fastSubnetScan(): List<DiscoveredDevice> = withContext(Dispatchers.IO) {
-        val devices = mutableListOf<DiscoveredDevice>()
-        val localIp = getLocalIp() ?: return@withContext devices
-        val subnet = localIp.substringBeforeLast('.')
-        Log.d(TAG, "Pinging subnet $subnet.xxx")
-
-        val liveHosts = mutableListOf<String>()
-        for (host in 1..254) {
-            val ip = "$subnet.$host"
-            try {
-                if (InetAddress.getByName(ip).isReachable(200)) {
-                    liveHosts.add(ip)
-                    Log.d(TAG, "Live host: $ip")
-                }
-            } catch (_: Exception) { }
+    private suspend fun fastSubnetScan(timeoutMs: Long = 15000L): List<DiscoveredDevice> = withContext(Dispatchers.IO) {
+        val devices = Collections.synchronizedList(mutableListOf<DiscoveredDevice>())
+        val localIp = getLocalIp() ?: run {
+            Log.w(TAG, "Cannot determine local IP — WiFi might be off or only Tailscale active")
+            return@withContext devices
         }
+        val subnet = localIp.substringBeforeLast('.')
+        Log.d(TAG, "TCP-scanning subnet $subnet.xxx on ports ${SCAN_PORTS.joinToString()}")
 
-        Log.d(TAG, "Found ${liveHosts.size} live hosts, probing ONVIF ports")
-        for (ip in liveHosts) {
-            for (port in SCAN_PORTS) {
-                try {
-                    val sock = Socket()
-                    sock.connect(InetSocketAddress(ip, port), 200)
-                    sock.close()
-                    val response = httpGet("http://$ip:$port/")
-                    if (response != null && (response.contains("onvif", ignoreCase = true) ||
-                            response.contains("eyeplus", ignoreCase = true) ||
-                            response.contains("ginatex", ignoreCase = true) ||
-                            response.contains("camera", ignoreCase = true) ||
-                            response.contains("device", ignoreCase = true))) {
-                        devices.add(DiscoveredDevice(ip = ip, port = port, source = "tcp-scan"))
-                        Log.d(TAG, "Found camera: $ip:$port")
-                    }
-                } catch (_: Exception) { }
+        val semaphore = Semaphore(20) // max 20 concurrent connections
+        val connectTimeout = 200
+        val hosts = 1..254
+
+        // Single-pass: try each host on all scan ports in parallel
+        val jobs = hosts.map { host ->
+            async {
+                val ip = "$subnet.$host"
+                var found = false
+                for (port in SCAN_PORTS) {
+                    if (found) break // stop scanning this host once we found it
+                    semaphore.acquire()
+                    try {
+                        val sock = Socket()
+                        sock.connect(InetSocketAddress(ip, port), connectTimeout)
+                        sock.close()
+                        // Port open — try HTTP GET first (fast), fallback to ONVIF probe
+                        val body = httpGet("http://$ip:$port/")
+                        var isCamera = false
+                        if (body != null) {
+                            isCamera = body.contains("onvif", ignoreCase = true) ||
+                                body.contains("eyeplus", ignoreCase = true) ||
+                                body.contains("ginatex", ignoreCase = true) ||
+                                body.contains("camera", ignoreCase = true) ||
+                                body.contains("device", ignoreCase = true) ||
+                                body.contains("dvr", ignoreCase = true) ||
+                                body.contains("web", ignoreCase = true)
+                        }
+                        // HTTP check didn't confirm — try direct ONVIF probe on common paths
+                        if (!isCamera) {
+                            for (onvifPath in ONVIF_PATHS) {
+                                val soapResponse = httpPost("http://$ip:$port$onvifPath", GET_CAPABILITIES_SOAP)
+                                if (soapResponse != null && soapResponse.contains("Capabilities", ignoreCase = true)) {
+                                    isCamera = true
+                                    Log.i(TAG, "ONVIF confirmed at $ip:$port$onvifPath")
+                                    break
+                                }
+                            }
+                        }
+                        if (isCamera) {
+                            devices.add(DiscoveredDevice(ip = ip, port = port, source = "tcp-scan"))
+                            found = true
+                            Log.i(TAG, "CAMERA FOUND via TCP: $ip:$port")
+                        } else {
+                            Log.v(TAG, "Open port $ip:$port (not a camera)")
+                        }
+                    } catch (_: Exception) { }
+                    finally { semaphore.release() }
+                }
             }
         }
-        devices
+        jobs.awaitAll()
+
+        Log.d(TAG, "TCP scan complete — found ${devices.size} camera(s)")
+        devices.toList()
     }
 
     private suspend fun arpCacheScan(): List<DiscoveredDevice> = withContext(Dispatchers.IO) {
@@ -184,6 +238,30 @@ class OnvifDiscovery {
             conn.connectTimeout = 1000
             conn.readTimeout = 1000
             conn.instanceFollowRedirects = false
+            val code = conn.responseCode
+            if (code in 200..399) {
+                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                val text = reader.readText()
+                reader.close()
+                text
+            } else null
+        } catch (_: Exception) { null }
+    }
+
+    private fun httpPost(urlStr: String, soapXml: String): String? {
+        return try {
+            val url = URL(urlStr)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 1000
+            conn.readTimeout = 1000
+            conn.setRequestProperty("Content-Type", "application/soap+xml; charset=utf-8")
+            conn.setRequestProperty("SOAPAction", "\"http://www.onvif.org/ver10/device/wsdl/GetCapabilities\"")
+            val os = conn.outputStream
+            os.write(soapXml.toByteArray(Charsets.UTF_8))
+            os.flush()
+            os.close()
             val code = conn.responseCode
             if (code in 200..399) {
                 val reader = BufferedReader(InputStreamReader(conn.inputStream))

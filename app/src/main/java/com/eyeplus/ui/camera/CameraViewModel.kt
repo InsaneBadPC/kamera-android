@@ -94,13 +94,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     val first = devices.first()
                     connectToCamera(first.ip, first.port)
                 } else {
+                    val ctx = getApplication<Application>()
+                    val myIp = NetworkUtils.getLocalIpAddress() ?: "nezjištěna"
+                    val wifiOk = NetworkUtils.isWifiConnected(ctx)
                     _uiState.value = _uiState.value.copy(
-                        error = "Nebyla nalezena kamera.\n\n" +
-                            "Tipy:\n" +
-                            "1. Ujistěte se, že telefon a kamera jsou ve stejné WiFi síti\n" +
-                            "2. Použijte 'Ruční připojení' a zadejte IP adresu kamery\n" +
-                            "3. Zkontrolujte, zda má kamera zapnutý ONVIF\n" +
-                            "4. Zkuste zadat IP ve tvaru: http://192.168.x.x:80"
+                        error = "Nebyla nalezena žádná kamera.\n\n" +
+                            "Zkontrolujte:\n" +
+                            "1. Telefon i kamera musí být ve STEJNÉ WiFi síti\n" +
+                            "2. Vypněte mobilní data / VPN / Tailscale během hledání\n" +
+                            "3. Kamera musí mít zapnutý ONVIF (v nastavení kamery)\n" +
+                            "4. Zkuste 'Ruční připojení' -> zadejte IP kamery (např. 192.168.1.100)\n" +
+                            "5. Zkuste porty: 80, 8080 nebo 8899\n" +
+                            "6. Ověřte IP kamery v prohlížeči: http://IP_KAMERY\n\n" +
+                            "Lokální IP telefonu: $myIp\n" +
+                            "WiFi připojení: ${if (wifiOk) "ANO" else "NE"}"
                     )
                 }
             } catch (e: Exception) {
