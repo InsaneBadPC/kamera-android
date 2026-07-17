@@ -17,8 +17,6 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.concurrent.TimeUnit
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
 class OnvifClient(
     private val host: String,
@@ -160,7 +158,7 @@ class OnvifClient(
                 Log.d(TAG, "SOAP $endpoint")
                 client.newCall(request).execute().use { response ->
                     val body = response.body?.string()
-                    val code = response.code()
+                    val code = response.code
                     Log.d(TAG, "  HTTP $code")
                     if (code in 200..399 && body != null) {
                         body
