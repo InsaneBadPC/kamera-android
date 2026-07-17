@@ -83,17 +83,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
                 val devices = discovery.discover(timeoutMs = 8000L)
                 Log.d("CameraViewModel", "Discovery found ${devices.size} devices")
-                devices.forEach { Log.d("CameraViewModel", "  ${it.source}: ${it.ip}:${it.port}") }
+                devices.forEach { Log.d("CameraViewModel", "  [${it.source}] ${it.ip}:${it.port}") }
 
                 _uiState.value = _uiState.value.copy(
                     isDiscovering = false,
                     discoveredDevices = devices
                 )
 
-                if (devices.isNotEmpty()) {
-                    val first = devices.first()
+                // Auto-connect only to confirmed cameras, show all in list otherwise
+                val confirmed = devices.filter { it.source != "possible" }
+                if (confirmed.isNotEmpty()) {
+                    val first = confirmed.first()
+                    Log.d("CameraViewModel", "Auto-connecting to confirmed camera: ${first.ip}:${first.port}")
                     connectToCamera(first.ip, first.port)
-                } else {
+                } else if (devices.isEmpty()) {
                     val ctx = getApplication<Application>()
                     val myIp = NetworkUtils.getLocalIpAddress() ?: "nezjištěna"
                     val wifiOk = NetworkUtils.isWifiConnected(ctx)

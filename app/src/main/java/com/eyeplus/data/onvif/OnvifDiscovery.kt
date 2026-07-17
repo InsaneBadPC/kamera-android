@@ -30,7 +30,7 @@ class OnvifDiscovery {
         private const val MULTICAST_PORT = 3702
         private const val DEFAULT_TIMEOUT_MS = 5000L
         private const val BUFFER_SIZE = 65536
-        private val SCAN_PORTS = listOf(80, 8080, 8899)
+        private val SCAN_PORTS = listOf(80, 8080, 8899, 554)
 
         private val PROBE_MESSAGE = """<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope
@@ -164,36 +164,59 @@ class OnvifDiscovery {
                         val sock = Socket()
                         sock.connect(InetSocketAddress(ip, port), connectTimeout)
                         sock.close()
-                        // Port open — try HTTP GET first (fast), fallback to ONVIF probe
+
+                        // Port open — try to confirm it's a camera
+                        var confirmed = false
+                        var sourceInfo = ""
+
+                        // 1) Fast HTTP GET check — keywords in response body
                         val body = httpGet("http://$ip:$port/")
-                        var isCamera = false
                         if (body != null) {
-                            isCamera = body.contains("onvif", ignoreCase = true) ||
+                            if (body.contains("onvif", ignoreCase = true) ||
                                 body.contains("eyeplus", ignoreCase = true) ||
                                 body.contains("ginatex", ignoreCase = true) ||
                                 body.contains("camera", ignoreCase = true) ||
-                                body.contains("device", ignoreCase = true) ||
                                 body.contains("dvr", ignoreCase = true) ||
-                                body.contains("web", ignoreCase = true)
+                                body.contains("nvr", ignoreCase = true)) {
+                                confirmed = true
+                                sourceInfo = "http-match"
+                                Log.d(TAG, "HTTP keyword match at $ip:$port")
+                            } else {
+                                // No keywords but got HTTP response — potential device
+                                sourceInfo = "http-any"
+                            }
                         }
-                        // HTTP check didn't confirm — try direct ONVIF probe on common paths
-                        if (!isCamera) {
+
+                        // 2) ONVIF SOAP probe — any XML/SOAP response (including 401 auth faults)
+                        //    means an ONVIF endpoint exists behind that port
+                        if (!confirmed) {
                             for (onvifPath in ONVIF_PATHS) {
                                 val soapResponse = httpPost("http://$ip:$port$onvifPath", GET_CAPABILITIES_SOAP)
-                                if (soapResponse != null && soapResponse.contains("Capabilities", ignoreCase = true)) {
-                                    isCamera = true
-                                    Log.i(TAG, "ONVIF confirmed at $ip:$port$onvifPath")
-                                    break
+                                if (soapResponse != null) {
+                                    // Check if response is SOAP/XML (ONVIF endpoint even if auth required)
+                                    if (soapResponse.contains("Envelope", ignoreCase = true) ||
+                                        soapResponse.contains("onvif", ignoreCase = true) ||
+                                        soapResponse.contains("Capabilities", ignoreCase = true) ||
+                                        soapResponse.contains("Fault", ignoreCase = true) ||
+                                        soapResponse.contains("Security", ignoreCase = true)) {
+                                        confirmed = true
+                                        sourceInfo = "onvif-probe"
+                                        Log.i(TAG, "ONVIF endpoint confirmed at $ip:$port$onvifPath" +
+                                            " (HTTP ${if (body != null) "with body" else "no body"})")
+                                        break
+                                    }
                                 }
                             }
                         }
-                        if (isCamera) {
-                            devices.add(DiscoveredDevice(ip = ip, port = port, source = "tcp-scan"))
-                            found = true
-                            Log.i(TAG, "CAMERA FOUND via TCP: $ip:$port")
-                        } else {
-                            Log.v(TAG, "Open port $ip:$port (not a camera)")
-                        }
+
+                        // Always add TCP-open devices — ONVIF auth was the blocker before
+                        devices.add(DiscoveredDevice(
+                            ip = ip, port = port,
+                            source = if (confirmed) "tcp-scan" else "possible"
+                        ))
+                        found = true
+                        Log.i(TAG, "CAMERA FOUND via TCP: $ip:$port (confirmed=$confirmed, src=$sourceInfo)")
+
                     } catch (_: Exception) { }
                     finally { semaphore.release() }
                 }
@@ -239,8 +262,10 @@ class OnvifDiscovery {
             conn.readTimeout = 1000
             conn.instanceFollowRedirects = false
             val code = conn.responseCode
-            if (code in 200..399) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+            // Read body for ANY code — even 401 pages may contain camera identifiers
+            val bodyStream = if (code in 200..399) conn.inputStream else conn.errorStream
+            if (bodyStream != null) {
+                val reader = BufferedReader(InputStreamReader(bodyStream))
                 val text = reader.readText()
                 reader.close()
                 text
@@ -263,8 +288,10 @@ class OnvifDiscovery {
             os.flush()
             os.close()
             val code = conn.responseCode
-            if (code in 200..399) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+            // Read body for ANY HTTP code — ONVIF 401/403 responses still have valid SOAP XML body
+            val bodyStream = if (code in 200..399) conn.inputStream else conn.errorStream
+            if (bodyStream != null) {
+                val reader = BufferedReader(InputStreamReader(bodyStream))
                 val text = reader.readText()
                 reader.close()
                 text
